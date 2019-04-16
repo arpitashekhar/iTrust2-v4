@@ -24,6 +24,8 @@ import edu.ncsu.csc.itrust2.models.persistent.User;
 import edu.ncsu.csc.itrust2.utils.EmailUtil;
 import edu.ncsu.csc.itrust2.utils.LoggerUtil;
 
+import redis.clients.jedis.Jedis; 
+
 /**
  * REST Controller that provides the endpoints for password changing and
  * resetting.
@@ -106,53 +108,73 @@ public class APIPasswordController extends APIController {
      */
     @PostMapping ( BASE_PATH + "/requestPasswordReset" )
     public ResponseEntity requestReset ( @RequestBody final String username ) {
-        final User user = User.getByName( username );
-        if ( user == null ) {
-            return new ResponseEntity( errorResponse( "Could not find user with username " + username ),
-                    HttpStatus.BAD_REQUEST );
+
+        // jedis feature flag
+
+        Jedis jedis = new Jedis();
+        String featureFlag = jedis.get("mykey");
+
+        System.out.println(featureFlag);
+        if(featureFlag == null || featureFlag.equals("false"))
+        {
+            LoggerUtil.log( TransactionType.PASSWORD_UPDATE_FAILURE,
+                        "Feature flag not set" );
+                return new ResponseEntity( errorResponse( "Feature flag not set" ), HttpStatus.FORBIDDEN );
         }
-        try {
-            final PasswordResetToken token = new PasswordResetToken( user );
-            token.save();
-            final String port = "8080";
-            final String host = InetAddress.getLocalHost().getHostAddress();
+        else {
 
-            final String link = "http://" + host + ":" + port + "/iTrust2/resetPassword?tkid=" + token.getId();
-
-            String addr = "";
-            String firstName = "";
-            final Personnel person = Personnel.getByName( user );
-            if ( person != null ) {
-                addr = person.getEmail();
-                firstName = person.getFirstName();
+            
+            final User user = User.getByName( username );
+            if ( user == null ) {
+                return new ResponseEntity( errorResponse( "Could not find user with username " + username ),
+                        HttpStatus.BAD_REQUEST );
             }
-            else {
-                final Patient patient = Patient.getPatient( user );
-                if ( patient != null ) {
-                    addr = patient.getEmail();
-                    firstName = patient.getFirstName();
+            try {
+                final PasswordResetToken token = new PasswordResetToken( user );
+                token.save();
+                final String port = "8080";
+                final String host = InetAddress.getLocalHost().getHostAddress();
+
+                final String link = "http://" + host + ":" + port + "/iTrust2/resetPassword?tkid=" + token.getId();
+
+                String addr = "";
+                String firstName = "";
+                final Personnel person = Personnel.getByName( user );
+                if ( person != null ) {
+                    addr = person.getEmail();
+                    firstName = person.getFirstName();
                 }
                 else {
-                    throw new Exception( "No Patient or Personnel on file for " + user.getId() );
+                    final Patient patient = Patient.getPatient( user );
+                    if ( patient != null ) {
+                        addr = patient.getEmail();
+                        firstName = patient.getFirstName();
+                    }
+                    else {
+                        throw new Exception( "No Patient or Personnel on file for " + user.getId() );
+                    }
                 }
+
+                String body = "Hello " + firstName + ", \n\nWe receieved a request to reset your password.\n";
+                body += "Go to " + link + "\nand use the reset token: " + token.getTempPasswordPlaintext() + "\n";
+                body += "\nIf you did not request a password reset, please contact a system administrator.\n\n--iTrust2 Admin";
+                EmailUtil.sendEmail( addr, "iTrust2 Password Reset", body );
+
+                LoggerUtil.log( TransactionType.PASSWORD_UPDATE_SUCCESS, user.getUsername(),
+                        "Successfully changed password for user " + user.getUsername() );
+                return new ResponseEntity( successResponse( "" ), HttpStatus.OK );
             }
-
-            String body = "Hello " + firstName + ", \n\nWe receieved a request to reset your password.\n";
-            body += "Go to " + link + "\nand use the reset token: " + token.getTempPasswordPlaintext() + "\n";
-            body += "\nIf you did not request a password reset, please contact a system administrator.\n\n--iTrust2 Admin";
-            EmailUtil.sendEmail( addr, "iTrust2 Password Reset", body );
-
-            LoggerUtil.log( TransactionType.PASSWORD_UPDATE_SUCCESS, user.getUsername(),
-                    "Successfully changed password for user " + user.getUsername() );
-            return new ResponseEntity( successResponse( "" ), HttpStatus.OK );
+            catch ( final Exception e ) {
+                e.printStackTrace();
+                LoggerUtil.log( TransactionType.PASSWORD_UPDATE_FAILURE, user.getUsername(),
+                        "Could not change password for user with username " + username );
+                return new ResponseEntity( errorResponse( "Could not complete request due to: " + e.getMessage() ),
+                        HttpStatus.INTERNAL_SERVER_ERROR );
+            }
         }
-        catch ( final Exception e ) {
-            e.printStackTrace();
-            LoggerUtil.log( TransactionType.PASSWORD_UPDATE_FAILURE, user.getUsername(),
-                    "Could not change password for user with username " + username );
-            return new ResponseEntity( errorResponse( "Could not complete request due to: " + e.getMessage() ),
-                    HttpStatus.INTERNAL_SERVER_ERROR );
-        }
+
+
+        
     }
 
     /**
